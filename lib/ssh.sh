@@ -1,5 +1,8 @@
 #!/bin/bash
-# lib/ssh.sh — SSH/SCP helpers. Sourced by other scripts; do not execute directly.
+# lib/ssh.sh — SSH/SCP helpers for talking to CLIENT servers (always plain
+# SSH, regardless of whether the manager itself runs in Docker or
+# natively — see lib/docker.sh for the manager side).
+# Sourced by other scripts; do not execute directly.
 
 SSH_KEY="${SSH_KEY:-$HOME/.ssh/soc_deploy}"
 
@@ -23,14 +26,20 @@ ssh_require() {
 
 _ssh_opts() {
     local port="$1"
-    echo "-i $SSH_KEY -p $port -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new"
+    SSH_OPTS_ARR=(-i "$SSH_KEY" -p "$port" -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new)
+}
+
+_scp_opts() {
+    local port="$1"
+    SCP_OPTS_ARR=(-i "$SSH_KEY" -P "$port" -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new)
 }
 
 # ssh_run host user port 'remote command'
 ssh_run() {
     local host="$1" user="$2" port="$3" cmd="$4"
-    # shellcheck disable=SC2086
-    ssh $(_ssh_opts "$port") "${user}@${host}" "$cmd"
+    local SSH_OPTS_ARR
+    _ssh_opts "$port"
+    ssh "${SSH_OPTS_ARR[@]}" "${user}@${host}" "$cmd"
 }
 
 # ssh_test host user port -> 0 if reachable and authenticates
@@ -42,16 +51,17 @@ ssh_test() {
 # scp_push host user port local_path remote_path
 scp_push() {
     local host="$1" user="$2" port="$3" local_path="$4" remote_path="$5"
-    # shellcheck disable=SC2086
-    scp -i "$SSH_KEY" -P "$port" -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new \
-        "$local_path" "${user}@${host}:${remote_path}"
+    local SCP_OPTS_ARR
+    _scp_opts "$port"
+    scp "${SCP_OPTS_ARR[@]}" "$local_path" "${user}@${host}:${remote_path}"
 }
 
 # scp_pull host user port remote_path local_path
 scp_pull() {
     local host="$1" user="$2" port="$3" remote_path="$4" local_path="$5"
-    scp -i "$SSH_KEY" -P "$port" -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new \
-        "${user}@${host}:${remote_path}" "$local_path"
+    local SCP_OPTS_ARR
+    _scp_opts "$port"
+    scp "${SCP_OPTS_ARR[@]}" "${user}@${host}:${remote_path}" "$local_path"
 }
 
 # remote_sha256 host user port remote_path -> prints hash or empty on failure

@@ -5,6 +5,7 @@ set -Eeuo pipefail
 MANAGER_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$MANAGER_HOME/lib/database.sh"
 source "$MANAGER_HOME/lib/ssh.sh"
+source "$MANAGER_HOME/lib/docker.sh"
 
 GREEN="\033[0;32m"; RED="\033[0;31m"; YELLOW="\033[1;33m"; NC="\033[0m"
 pass() { echo -e "${GREEN}[PASS]${NC} $1"; }
@@ -62,6 +63,16 @@ elif [ -n "$free_kb" ]; then
     warn "Low disk space: $((free_kb / 1024)) MB free"
 else
     warn "Could not determine disk space"
+fi
+
+if wazuh_ready 2>/dev/null; then
+    if wazuh_exec /var/ossec/bin/agent_control -lc 2>/dev/null | grep -qi "$name\|$host"; then
+        pass "Manager sees an agent matching '$name'/'$host' in agent_control -lc"
+    else
+        warn "Manager's agent_control -lc doesn't show '$name'/'$host' yet (may still be pending first connection)"
+    fi
+else
+    warn "Could not check manager-side agent list (no Wazuh manager detected here)"
 fi
 
 if $overall_ok; then

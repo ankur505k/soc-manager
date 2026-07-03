@@ -37,13 +37,19 @@ dnf install -y sqlite openssh-clients
 apt install -y sqlite3 openssh-client
 ```
 
+If your manager runs in Docker, `docker` itself must be installed and
+the manager container running — nothing else Docker-specific is needed
+on the host.
+
 Generate the deploy key once:
 ```bash
 ssh-keygen -t ed25519 -f ~/.ssh/soc_deploy -N '' -C soc-manager-deploy
 ```
 
-`company-manager.sh` refuses to run anywhere that doesn't look like a
-Wazuh manager (`/var/ossec/bin/agent_groups` must exist).
+`company-manager.sh` refuses to run unless it can find a Wazuh manager —
+either a running Docker container matching `wazuh*manager`/
+`manager*wazuh`, or a native install (`/var/ossec/bin/agent_groups`
+present). See "Docker-based Wazuh managers" below.
 
 ## Order of operations for a new company
 
@@ -85,24 +91,58 @@ I could not run an end-to-end test against real infrastructure. What I
 - `sql_escape()`, `company_slug()`, and every input validator, directly.
 - `templates/custom-telegram.py` — syntax-checked with `py_compile`, not
   run against the live Telegram API (no network here).
+- `lib/docker.sh` against a mocked `docker` command: single matching
+  container (detected + cached to `.wazuh_container`), cached-name reuse
+  on a subsequent run, multiple ambiguous containers (correctly refuses
+  to guess), and no-docker/no-native (correctly reports "not detected").
+- The full Docker-routed `lib/wazuh_integration.sh` flow against a fake
+  "container filesystem" (a local directory standing in for `docker cp`/
+  `docker exec` targets): two companies added without cross-contamination,
+  an update that replaces one company's Slack block and removes its
+  stale Telegram block without touching the other company, full removal,
+  and a forced restart failure correctly triggering rollback to the
+  pre-edit config — valid XML confirmed via `xmllint` at every step.
+- `rollback.sh`'s backup listing (newest-first), selection, and restore
+  flow, including that it backs up the pre-rollback state before
+  overwriting anything.
+- `integration.sh sync|status|remove`, including a clean failure message
+  for a company that doesn't exist.
 
 What still needs verification on your actual manager + a real client
 server, which I cannot do from here: an actual SSH round-trip through
 `lib/ssh.sh`, `sqlite3` behavior in `lib/database.sh` (the SQL text is
 correct but never executed against real SQLite in this sandbox), a real
-`wazuh-manager` restart picking up the `<integration>` blocks, and an
-actual alert flowing through to Slack/Telegram end-to-end (as opposed to
-the direct credential test `test-alert.sh` performs).
+`docker exec`/`docker cp`/`docker restart` against your actual
+`single-node-wazuh.manager-1`-style container, a real `wazuh-manager`
+restart picking up the `<integration>` blocks, and an actual alert
+flowing through to Slack/Telegram end-to-end (as opposed to the direct
+credential test `test-alert.sh` performs).
 
 ## Docker-based Wazuh managers
 
-If your Wazuh manager runs in Docker rather than natively, the paths in
-`lib/wazuh_integration.sh` (`MGR_OSSEC_CONF`, `AGENT_GROUPS_BIN`, etc.)
-and the `systemctl restart wazuh-manager` call need to target the
-container instead — either bind-mount the relevant paths through, or
-wrap the affected calls with `docker exec`. Not implemented here since
-your earlier scripts in this conversation used `dnf`/AlmaLinux, implying
-a native install.
+**Now implemented.** `lib/docker.sh` auto-detects, once per run, whether
+the Wazuh manager is a running Docker container (any name matching
+`wazuh*manager` or `manager*wazuh`) or a native systemd install, and
+caches the container name in `.wazuh_container` so it doesn't re-scan
+every invocation. Every other script talks to the manager only through
+`wazuh_exec` / `wazuh_copy_to` / `wazuh_copy_from` / `wazuh_restart` /
+`wazuh_is_active` — nothing else assumes `/var/ossec` is local.
+
+- If more than one container matches, detection refuses to guess: set
+  `WAZUH_CONTAINER=<name>` explicitly (env var, or write the name into
+  `.wazuh_container`) and re-run.
+- `ossec.conf` edits always follow the same pattern regardless of mode:
+  pull a local temp copy (`docker cp` or plain `cp`), edit/validate it
+  locally with `xmllint`, push it back, restart, verify, auto-rollback
+  on any failure — see `mgr_commit_and_verify` in `lib/wazuh_integration.sh`.
+- `rollback.sh` is a separate, on-demand tool for restoring an *older*
+  backup than "the last edit" (which already auto-rolls-back by itself).
+- `integration.sh sync|remove|status <company>` is a manual CLI into the
+  same sync logic `company-manager.sh` calls automatically, for
+  re-applying config by hand after something else touched the manager.
+- Client servers are unaffected either way — they're always plain
+  AlmaLinux/Ubuntu boxes reached over SSH; `client-setup.sh` has no
+  Docker awareness and needs none.
 
 ## Files
 
@@ -110,12 +150,18 @@ a native install.
 company-manager.sh   Main interactive menu
 client-setup.sh       Run once per new client server
 deploy.sh             Checks/completes enrollment for a company
-verify.sh             SSH + agent health check for a company
+verify.sh             SSH + agent health check for a company, incl.
+                       manager-side agent_control -lc cross-check
+rollback.sh            Restore an older manager ossec.conf backup on demand
+integration.sh         Manual sync/remove/status CLI for one company's
+                        manager-side <integration> blocks
 test-alert.sh         Direct Slack/Telegram credential test
 schema.sql            SQLite schema
 lib/database.sh        SQLite helpers (parameterized-style escaping)
-lib/ssh.sh              SSH/SCP helpers
+lib/ssh.sh              SSH/SCP helpers — always talks to CLIENT servers
+lib/docker.sh           Abstracts the MANAGER: Docker container vs native
 lib/config.sh           Input validation, company_slug()
-lib/wazuh_integration.sh  Agent group + <integration> block management
+lib/wazuh_integration.sh  Agent group + <integration> block management,
+                          routed through lib/docker.sh
 templates/custom-telegram.py  Manager-side Telegram integration script
 ```

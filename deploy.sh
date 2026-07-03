@@ -14,6 +14,7 @@ MANAGER_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$MANAGER_HOME/lib/database.sh"
 source "$MANAGER_HOME/lib/ssh.sh"
 source "$MANAGER_HOME/lib/config.sh"
+source "$MANAGER_HOME/lib/docker.sh"
 
 LOG_FILE="$MANAGER_HOME/logs/soc-manager.log"
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S') [deploy] $1" >> "$LOG_FILE"; }
@@ -24,6 +25,8 @@ COMPANY="$1"
 
 ssh_require || exit 1
 db_init || exit 1
+wazuh_ready || { echo "No Wazuh manager detected (Docker or native) — see README." >&2; exit 1; }
+echo "$(wazuh_manager_summary)"
 
 if ! db_company_exists "$COMPANY"; then
     echo "No such company: $COMPANY" >&2
@@ -78,6 +81,14 @@ echo "----------------------------------------------------------"
 echo
 echo "Note: the '$SLUG' Wazuh agent group must exist on this manager before"
 echo "that script runs (company-manager.sh's 'Add Company' creates it automatically)."
+if docker_ok; then
+    echo
+    echo "Manager is running in Docker (container: $WAZUH_CONTAINER)."
+    echo "WAZUH_MANAGER_IP above is this Docker HOST's IP, not the container's"
+    echo "internal IP — that's correct, but only works if ports 1514/1515 are"
+    echo "published from the container to the host. Verify with:"
+    echo "  docker ps --filter name=$WAZUH_CONTAINER --format '{{.Ports}}'"
+fi
 
 db_set_status "$COMPANY" "pending"
 log "PENDING $COMPANY needs client-setup.sh run manually on $host"

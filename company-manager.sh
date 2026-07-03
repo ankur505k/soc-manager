@@ -9,6 +9,7 @@ LOCK_FILE="/var/run/soc-manager.lock"
 source "$MANAGER_HOME/lib/database.sh"
 source "$MANAGER_HOME/lib/ssh.sh"
 source "$MANAGER_HOME/lib/config.sh"
+source "$MANAGER_HOME/lib/docker.sh"
 source "$MANAGER_HOME/lib/wazuh_integration.sh"
 
 GREEN="\033[0;32m"; RED="\033[0;31m"; YELLOW="\033[1;33m"; BLUE="\033[0;34m"; NC="\033[0m"
@@ -42,11 +43,14 @@ acquire_lock() {
 }
 
 require_wazuh_manager() {
-    if [ ! -d /var/ossec ] || [ ! -x /var/ossec/bin/agent_groups ]; then
-        fail "This doesn't look like a Wazuh manager host (no /var/ossec/bin/agent_groups)."
-        echo "company-manager.sh must run on the Wazuh manager itself — see README."
+    if ! wazuh_ready; then
+        fail "No Wazuh manager detected — neither a running Docker container"
+        echo "     matching 'wazuh*manager' nor a native /var/ossec install."
+        echo "     If your manager runs in Docker under a different container"
+        echo "     name, set WAZUH_CONTAINER=<name> and re-run."
         exit 1
     fi
+    info "$(wazuh_manager_summary)"
 }
 
 add_company() {
@@ -226,6 +230,8 @@ menu() {
         echo "===================================="
         echo "        SOC MANAGEMENT"
         echo "===================================="
+        echo "$(wazuh_manager_summary)"
+        echo "===================================="
         echo "1  Add Company"
         echo "2  Update Company"
         echo "3  Delete Company"
@@ -233,6 +239,7 @@ menu() {
         echo "5  Test Connection (SSH/agent health)"
         echo "6  Check / Complete Enrollment"
         echo "7  Test Alert (Slack/Telegram credentials)"
+        echo "8  Rollback Manager Config"
         echo "0  Exit"
         echo "===================================="
         read -r -p "Select: " op
@@ -245,6 +252,7 @@ menu() {
             5) read -r -p "Company name: " n; "$MANAGER_HOME/verify.sh" "$n"; pause ;;
             6) read -r -p "Company name: " n; "$MANAGER_HOME/deploy.sh" "$n"; pause ;;
             7) read -r -p "Company name: " n; "$MANAGER_HOME/test-alert.sh" "$n"; pause ;;
+            8) "$MANAGER_HOME/rollback.sh"; pause ;;
             0) echo "Goodbye."; exit 0 ;;
             *) warn "Invalid option."; sleep 1 ;;
         esac
