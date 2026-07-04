@@ -6,6 +6,7 @@ MANAGER_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$MANAGER_HOME/lib/database.sh"
 source "$MANAGER_HOME/lib/ssh.sh"
 source "$MANAGER_HOME/lib/docker.sh"
+source "$MANAGER_HOME/lib/preflight.sh"
 
 GREEN="\033[0;32m"; RED="\033[0;31m"; YELLOW="\033[1;33m"; NC="\033[0m"
 pass() { echo -e "${GREEN}[PASS]${NC} $1"; }
@@ -16,6 +17,7 @@ usage() { echo "Usage: $0 <company_name>" >&2; exit 1; }
 [ $# -eq 1 ] || usage
 COMPANY="$1"
 
+preflight_check || exit 1
 ssh_require || exit 1
 db_init || exit 1
 
@@ -66,7 +68,13 @@ else
 fi
 
 if wazuh_ready 2>/dev/null; then
-    if wazuh_exec /var/ossec/bin/agent_control -lc 2>/dev/null | grep -qi "$name\|$host"; then
+    # Fixed-string match on "Name: <exact>" / "IP: <exact>," rather than a
+    # loose substring/OR grep — a plain `grep "$name\|$host"` would also
+    # match e.g. company "Ac" against agent "Acme-01", or one octet of an
+    # IP appearing inside a different agent's name/ID.
+    agent_list="$(wazuh_exec /var/ossec/bin/agent_control -lc 2>/dev/null || true)"
+    if printf '%s\n' "$agent_list" | grep -qF "Name: ${name}," || \
+       printf '%s\n' "$agent_list" | grep -qF "IP: ${host},"; then
         pass "Manager sees an agent matching '$name'/'$host' in agent_control -lc"
     else
         warn "Manager's agent_control -lc doesn't show '$name'/'$host' yet (may still be pending first connection)"

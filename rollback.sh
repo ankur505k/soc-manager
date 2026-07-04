@@ -8,11 +8,16 @@
 set -Eeuo pipefail
 
 MANAGER_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$MANAGER_HOME/lib/lock.sh"
+source "$MANAGER_HOME/lib/preflight.sh"
 source "$MANAGER_HOME/lib/docker.sh"
 source "$MANAGER_HOME/lib/wazuh_integration.sh"
 
 LOG_FILE="$MANAGER_HOME/logs/soc-manager.log"
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S') [rollback] $1" >> "$LOG_FILE"; }
+
+preflight_check || exit 1
+soc_acquire_lock || exit 1
 
 GREEN="\033[0;32m"; RED="\033[0;31m"; YELLOW="\033[1;33m"; NC="\033[0m"
 ok()   { echo -e "${GREEN}[OK]${NC} $1"; }
@@ -65,25 +70,14 @@ read -r -p "This will overwrite the manager's live ossec.conf and restart it. Co
 CURRENT_BACKUP="$(mgr_backup_ossec_conf)" || { fail "Could not back up current config before rollback."; exit 1; }
 ok "Current config backed up to $(basename "$CURRENT_BACKUP") before proceeding."
 
-if ! wazuh_copy_to "$SELECTED" "$MGR_OSSEC_CONF_REMOTE"; then
-    fail "Could not push the selected backup to the manager."
+# Reuse the same push/config-test/restart/health-wait/auto-revert pipeline
+# every other write path uses, instead of a second hand-rolled copy here
+# that could drift out of sync with it.
+if mgr_commit_and_verify "$SELECTED" "$CURRENT_BACKUP"; then
+    ok "Rollback to $(basename "$SELECTED") complete and manager is healthy."
+    log "ROLLBACK to $(basename "$SELECTED"), pre-rollback state saved as $(basename "$CURRENT_BACKUP")"
+else
+    fail "Rollback failed and was reverted to the pre-rollback state. Check $LOG_FILE."
+    log "ROLLBACK-FAILED target=$(basename "$SELECTED") reverted-to=$(basename "$CURRENT_BACKUP")"
     exit 1
 fi
-
-if ! wazuh_restart; then
-    fail "Manager failed to restart after rollback. Restoring the pre-rollback config."
-    wazuh_copy_to "$CURRENT_BACKUP" "$MGR_OSSEC_CONF_REMOTE"
-    wazuh_restart 2>>"$LOG_FILE" || true
-    exit 1
-fi
-
-sleep 3
-if ! wazuh_is_active; then
-    fail "Manager not healthy after rollback. Restoring the pre-rollback config."
-    wazuh_copy_to "$CURRENT_BACKUP" "$MGR_OSSEC_CONF_REMOTE"
-    wazuh_restart 2>>"$LOG_FILE" || true
-    exit 1
-fi
-
-ok "Rollback to $(basename "$SELECTED") complete and manager is healthy."
-log "ROLLBACK to $(basename "$SELECTED"), pre-rollback state saved as $(basename "$CURRENT_BACKUP")"

@@ -72,6 +72,14 @@ wazuh_detect_mode() {
     return 1
 }
 
+# wazuh_remote_bin_exists <path> — used to probe for optional binaries
+# (e.g. wazuh-analysisd) before relying on them, since exact paths/flags
+# have shifted across Wazuh versions and we'd rather skip an extra check
+# than hard-fail a deploy because of it.
+wazuh_remote_bin_exists() {
+    wazuh_exec test -x "$1" 2>/dev/null
+}
+
 docker_ok() {
     wazuh_detect_mode && [ "$MANAGER_MODE" = "docker" ]
 }
@@ -108,12 +116,19 @@ wazuh_exec() {
 }
 
 # wazuh_copy_to <local_path> <remote_path>
+# Atomic: lands the file at "<remote_path>.soc-manager.tmp" first, then
+# renames it into place. A rename within the same directory is a single
+# syscall, so a crash/interruption mid-copy can never leave the live file
+# half-written — it either has the old content or the fully new content.
 wazuh_copy_to() {
     wazuh_detect_mode || return 1
+    local local_path="$1" remote_path="$2" remote_tmp="${2}.soc-manager.tmp"
     if [ "$MANAGER_MODE" = "docker" ]; then
-        docker cp "$1" "$WAZUH_CONTAINER:$2"
+        docker cp "$local_path" "$WAZUH_CONTAINER:$remote_tmp" || return 1
+        docker exec -i "$WAZUH_CONTAINER" mv -f "$remote_tmp" "$remote_path"
     else
-        cp -p "$1" "$2"
+        cp -p "$local_path" "$remote_tmp" || return 1
+        mv -f "$remote_tmp" "$remote_path"
     fi
 }
 
@@ -137,16 +152,44 @@ wazuh_restart() {
 }
 
 # wazuh_is_active: container running (docker mode) or service active
-# (native), AND wazuh-analysisd itself reports running — a restarted
-# container that immediately crash-loops must not read back as healthy.
+# (native), AND the manager's core daemons report running — a restarted
+# container that immediately crash-loops, or comes up with analysisd alive
+# but remoted/wazuh-db dead, must not read back as healthy. We check the
+# daemons that matter for "agents can connect and alerts get processed and
+# routed", not just "the process table has one entry in it".
 wazuh_is_active() {
     wazuh_detect_mode || return 1
     if [ "$MANAGER_MODE" = "docker" ]; then
         local running
         running="$(docker inspect -f '{{.State.Running}}' "$WAZUH_CONTAINER" 2>/dev/null)"
         [ "$running" = "true" ] || return 1
-        wazuh_exec /var/ossec/bin/wazuh-control status 2>/dev/null | grep -q "wazuh-analysisd is running"
     else
-        systemctl is-active --quiet wazuh-manager
+        systemctl is-active --quiet wazuh-manager || return 1
     fi
+
+    local status
+    status="$(wazuh_exec /var/ossec/bin/wazuh-control status 2>/dev/null)" || return 1
+    local d
+    for d in wazuh-analysisd wazuh-remoted wazuh-db; do
+        echo "$status" | grep -q "${d} is running" || return 1
+    done
+    return 0
+}
+
+# wazuh_wait_active <timeout_seconds> [poll_interval_seconds]
+# Polls wazuh_is_active instead of a single fixed sleep, so a manager that
+# genuinely just needs a few extra seconds to come up (normal on restart,
+# especially with many agents/rules) isn't treated as a failed deploy and
+# rolled back. Returns 0 as soon as it's healthy, 1 if it never becomes
+# healthy within the timeout.
+wazuh_wait_active() {
+    local timeout="${1:-90}" interval="${2:-3}" waited=0
+    while [ "$waited" -lt "$timeout" ]; do
+        if wazuh_is_active; then
+            return 0
+        fi
+        sleep "$interval"
+        waited=$((waited + interval))
+    done
+    wazuh_is_active
 }

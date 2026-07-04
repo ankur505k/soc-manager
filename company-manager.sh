@@ -4,13 +4,14 @@ set -Eeuo pipefail
 
 MANAGER_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LOG_FILE="$MANAGER_HOME/logs/soc-manager.log"
-LOCK_FILE="/var/run/soc-manager.lock"
 
+source "$MANAGER_HOME/lib/lock.sh"
 source "$MANAGER_HOME/lib/database.sh"
 source "$MANAGER_HOME/lib/ssh.sh"
 source "$MANAGER_HOME/lib/config.sh"
 source "$MANAGER_HOME/lib/docker.sh"
 source "$MANAGER_HOME/lib/wazuh_integration.sh"
+source "$MANAGER_HOME/lib/preflight.sh"
 
 GREEN="\033[0;32m"; RED="\033[0;31m"; YELLOW="\033[1;33m"; BLUE="\033[0;34m"; NC="\033[0m"
 ok() { echo -e "${GREEN}[OK]${NC} $1"; }
@@ -21,25 +22,13 @@ pause() { echo; read -r -p "Press Enter to continue..." _; }
 confirm() { read -r -p "$1 [y/N]: " a; [[ "$a" =~ ^[Yy]$ ]]; }
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S') [menu] $1" >> "$LOG_FILE"; }
 
-trap 'echo; warn "Interrupted."; rm -f "$LOCK_FILE"; exit 130' INT TERM
-trap 'rm -f "$LOCK_FILE"' EXIT
+trap 'echo; warn "Interrupted."; exit 130' INT TERM
 
 root_check() {
     if [ "$EUID" -ne 0 ]; then
         echo "Run as root: sudo $0"
         exit 1
     fi
-}
-
-acquire_lock() {
-    if [ -f "$LOCK_FILE" ]; then
-        local pid; pid="$(cat "$LOCK_FILE" 2>/dev/null || echo "")"
-        if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
-            fail "Another instance is already running (PID $pid)."
-            exit 1
-        fi
-    fi
-    echo $$ > "$LOCK_FILE"
 }
 
 require_wazuh_manager() {
@@ -69,6 +58,11 @@ add_company() {
         pause; return
     fi
     local slug; slug="$(company_slug "$name")"
+    local collision
+    if collision="$(db_slug_collision "$slug")"; then
+        fail "'$name' normalizes to Wazuh group '$slug', which is already used by '$collision'. Choose a more distinct name."
+        pause; return
+    fi
 
     local server_name host user port
     read -r -p "Server label (e.g. Delhi01): " server_name
@@ -96,7 +90,9 @@ add_company() {
     if mgr_create_group "$slug"; then
         ok "Group '$slug' ready."
     else
-        fail "Could not create group '$slug'. Check $LOG_FILE."
+        fail "Could not create group '$slug'. Rolling back the database entry so it doesn't reference a group that doesn't exist."
+        db_delete_company "$name"
+        log "ADD-FAILED company=$name slug=$slug reason=group-create-failed (db entry rolled back)"
         pause; return
     fi
 
@@ -106,6 +102,8 @@ add_company() {
             ok "Notification routing configured for '$name'."
         else
             fail "Failed to configure notification routing. See $LOG_FILE."
+            warn "'$name' and its agent group '$slug' were kept (client enrollment will still work)."
+            warn "Slack/Telegram routing is NOT active yet — fix the issue and re-run: ./integration.sh sync \"$name\""
         fi
     fi
 
@@ -202,6 +200,12 @@ delete_company() {
     if ! db_company_exists "$name"; then fail "No such company."; pause; return; fi
     local slug; slug="$(company_slug "$name")"
 
+    local agent_count
+    agent_count="$(mgr_group_agent_count "$slug" 2>/dev/null || echo "?")"
+    if [ "$agent_count" != "0" ] && [ "$agent_count" != "?" ]; then
+        warn "Group '$slug' still has $agent_count agent(s) assigned. Deleting it will leave those agents in a removed group."
+    fi
+
     if ! confirm "Delete '$name'? This removes it from the database and its manager-side notification routing."; then
         pause; return
     fi
@@ -261,11 +265,12 @@ menu() {
 
 main() {
     root_check
+    preflight_check || exit 1
     require_wazuh_manager
     ssh_require || exit 1
     mkdir -p "$MANAGER_HOME/logs" "$MANAGER_HOME/backup"
     touch "$LOG_FILE"; chmod 600 "$LOG_FILE"
-    acquire_lock
+    soc_acquire_lock || exit 1
     db_init || exit 1
     menu
 }

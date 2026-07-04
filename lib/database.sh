@@ -102,3 +102,21 @@ db_list_companies() {
 db_company_names() {
     db_query "SELECT company_name FROM companies ORDER BY company_name;"
 }
+
+# db_slug_collision <slug>: true if any EXISTING company already normalizes
+# to this same Wazuh agent-group slug. company_name is stored verbatim and
+# is only case-insensitively unique (see schema.sql), but two differently
+# punctuated names — "Acme Corp" and "Acme-Corp" — can still both slugify
+# to "acme-corp" via company_slug() and silently share one agent group.
+# Requires company_slug() (lib/config.sh) to already be sourced.
+db_slug_collision() {
+    local new_slug="$1" existing
+    while IFS= read -r existing; do
+        [ -z "$existing" ] && continue
+        if [ "$(company_slug "$existing")" = "$new_slug" ]; then
+            echo "$existing"
+            return 0
+        fi
+    done < <(db_company_names)
+    return 1
+}

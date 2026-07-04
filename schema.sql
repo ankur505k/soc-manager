@@ -1,6 +1,11 @@
+PRAGMA user_version = 1;
+
 CREATE TABLE IF NOT EXISTS companies (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
-    company_name   TEXT NOT NULL UNIQUE,
+    -- COLLATE NOCASE: "Acme" and "acme" are the same company as far as
+    -- the DB is concerned, since they'd otherwise collide on the same
+    -- lowercased Wazuh agent-group slug (see lib/config.sh company_slug).
+    company_name   TEXT NOT NULL UNIQUE COLLATE NOCASE,
     server_name    TEXT NOT NULL,
     host           TEXT NOT NULL,
     ssh_user       TEXT NOT NULL DEFAULT 'root',

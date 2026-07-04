@@ -163,5 +163,43 @@ lib/docker.sh           Abstracts the MANAGER: Docker container vs native
 lib/config.sh           Input validation, company_slug()
 lib/wazuh_integration.sh  Agent group + <integration> block management,
                           routed through lib/docker.sh
+lib/lock.sh             Shared single-instance lock (menu, integration.sh,
+                        rollback.sh can't run concurrently against the
+                        same ossec.conf/companies.db)
+lib/preflight.sh        Checks xmllint/sqlite3/ssh/scp/curl are installed
+                        before doing anything, with install hints
 templates/custom-telegram.py  Manager-side Telegram integration script
 ```
+
+## Hardening pass (2026-07-04)
+
+Following a security/reliability audit, these were fixed:
+- Health check after restart now polls up to 90s (`wazuh_wait_active`)
+  instead of a single `sleep 3`, and checks `analysisd`+`remoted`+`wazuh-db`
+  instead of just one daemon.
+- A deeper `wazuh-analysisd -t` config test now runs before every restart,
+  in addition to `xmllint`, and is skipped gracefully if unavailable.
+- `wazuh_copy_to` is now atomic (temp file + rename) so an interrupted
+  copy can't corrupt the live `ossec.conf`.
+- Ownership/permissions on `ossec.conf` are captured before every edit and
+  reapplied after, including on rollback.
+- Backups are validated (`xmllint`) before ever being restored, and old
+  backups beyond `MGR_BACKUP_RETENTION` (default 30) are pruned automatically.
+- `rollback.sh` and `integration.sh` now take the same process lock the
+  menu does, and all four manager-mutating entry points run a dependency
+  preflight check first.
+- Adding a company now rolls back the database row if Wazuh group
+  creation fails, instead of leaving a DB entry with no matching group.
+- Company names that would normalize to the same Wazuh group slug as an
+  existing company (case or punctuation differences) are now rejected.
+- Deleting a company warns first if its group still has agents assigned.
+- `verify.sh`'s manager-side agent match no longer uses a loose
+  substring/OR grep that could match the wrong agent.
+- Temp files in `lib/wazuh_integration.sh` are now cleaned up via `RETURN`
+  traps, so they can't leak if a command fails mid-function or the script
+  is interrupted.
+
+Not done in this pass (larger scope — see the original audit): encrypting
+secrets at rest in `companies.db`/backups, an audit log of who changed
+what, config-diff/dry-run modes, cluster/indexer/dashboard connectivity
+checks, and a unit/integration test suite.

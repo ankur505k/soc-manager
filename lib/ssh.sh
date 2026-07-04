@@ -26,12 +26,14 @@ ssh_require() {
 
 _ssh_opts() {
     local port="$1"
-    SSH_OPTS_ARR=(-i "$SSH_KEY" -p "$port" -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new)
+    SSH_OPTS_ARR=(-i "$SSH_KEY" -p "$port" -o BatchMode=yes -o ConnectTimeout=10 \
+        -o ServerAliveInterval=5 -o ServerAliveCountMax=3 -o StrictHostKeyChecking=accept-new)
 }
 
 _scp_opts() {
     local port="$1"
-    SCP_OPTS_ARR=(-i "$SSH_KEY" -P "$port" -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new)
+    SCP_OPTS_ARR=(-i "$SSH_KEY" -P "$port" -o BatchMode=yes -o ConnectTimeout=10 \
+        -o ServerAliveInterval=5 -o ServerAliveCountMax=3 -o StrictHostKeyChecking=accept-new)
 }
 
 # ssh_run host user port 'remote command'

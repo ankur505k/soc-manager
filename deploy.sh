@@ -15,6 +15,7 @@ source "$MANAGER_HOME/lib/database.sh"
 source "$MANAGER_HOME/lib/ssh.sh"
 source "$MANAGER_HOME/lib/config.sh"
 source "$MANAGER_HOME/lib/docker.sh"
+source "$MANAGER_HOME/lib/preflight.sh"
 
 LOG_FILE="$MANAGER_HOME/logs/soc-manager.log"
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S') [deploy] $1" >> "$LOG_FILE"; }
@@ -23,6 +24,7 @@ usage() { echo "Usage: $0 <company_name>" >&2; exit 1; }
 [ $# -eq 1 ] || usage
 COMPANY="$1"
 
+preflight_check || exit 1
 ssh_require || exit 1
 db_init || exit 1
 wazuh_ready || { echo "No Wazuh manager detected (Docker or native) — see README." >&2; exit 1; }

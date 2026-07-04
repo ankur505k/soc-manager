@@ -7,6 +7,8 @@
 set -Eeuo pipefail
 
 MANAGER_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$MANAGER_HOME/lib/lock.sh"
+source "$MANAGER_HOME/lib/preflight.sh"
 source "$MANAGER_HOME/lib/database.sh"
 source "$MANAGER_HOME/lib/config.sh"
 source "$MANAGER_HOME/lib/docker.sh"
@@ -14,6 +16,9 @@ source "$MANAGER_HOME/lib/wazuh_integration.sh"
 
 LOG_FILE="$MANAGER_HOME/logs/soc-manager.log"
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S') [integration] $1" >> "$LOG_FILE"; }
+
+preflight_check || exit 1
+soc_acquire_lock || exit 1
 
 GREEN="\033[0;32m"; RED="\033[0;31m"; YELLOW="\033[1;33m"; NC="\033[0m"
 ok()   { echo -e "${GREEN}[OK]${NC} $1"; }

@@ -19,6 +19,8 @@ usage() { echo "Usage: $0 <company_name>" >&2; exit 1; }
 [ $# -eq 1 ] || usage
 COMPANY="$1"
 
+command -v curl >/dev/null 2>&1 || { echo "curl is not installed." >&2; exit 1; }
+
 db_init || exit 1
 if ! db_company_exists "$COMPANY"; then
     echo "No such company: $COMPANY" >&2
