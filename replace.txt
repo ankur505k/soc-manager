@@ -1,0 +1,1 @@
+regex:https://hooks\.slack\.com/services/[A-Za-z0-9/_-]+==>SLACK_WEBHOOK_URL

@@ -164,8 +164,8 @@ mgr_commit_and_verify() {
         return 1
     fi
 
-    if ! wazuh_wait_active 90 3; then
-        echo "Manager not healthy after restart (waited 90s). Rolling back." >&2
+    if ! wazuh_wait_active "${MGR_WAIT_TIMEOUT:-180}" "${MGR_WAIT_INTERVAL:-5}"; then
+        echo "Manager not healthy after restart (waited ${MGR_WAIT_TIMEOUT:-180}s). Rolling back." >&2
         mgr_restore_ossec_conf "$backup" "$orig_perms" || true
         wazuh_restart 2>>"$LOG_FILE" || true
         return 1
