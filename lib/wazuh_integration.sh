@@ -93,6 +93,21 @@ mgr_config_test() {
 # mgr_insert_before_tag: same tag-aware insertion pattern used by the
 # per-server install.sh — never blind-appends, always lands the new block
 # before the given closing tag's LAST occurrence. Operates on a local file.
+#
+# Why sed here instead of xmlstarlet: this was reconsidered during
+# hardening. Standard xmlstarlet (the version `dnf`/`apt` actually ship,
+# not the community fork that adds it) has no supported way to insert a
+# pre-rendered multi-line fragment that mixes a comment marker with an
+# element as one unit — comment nodes aren't a supported -t type in `ed`,
+# and raw-string subnode insertion is a non-upstream fork feature. Doing
+# this "properly" in xmlstarlet would mean decomposing each block into
+# multiple -s/-i calls with no comment support at all, which would break
+# mgr_remove_block's marker-based lookup entirely. The content inserted
+# here is template-controlled (not raw user input — see
+# mgr_sync_company_integrations), and every write path already validates
+# the result with xmllint AND wazuh-analysisd -t before it's ever pushed
+# to the manager, with automatic rollback if either fails. Kept sed, added
+# a post-insert verification below instead.
 mgr_insert_before_tag() {
     local file="$1" content="$2" tag="$3"
     grep -q -F "$tag" "$file" || return 1
@@ -104,6 +119,12 @@ mgr_insert_before_tag() {
     line_no=$(grep -n -F "$tag" "$file" | tail -1 | cut -d: -f1)
     insert_at=$((line_no - 1))
     sed -i "${insert_at}r ${content_file}" "$file"
+    # Confirm the first line of the new content actually landed, rather
+    # than trusting sed's exit code alone (sed can exit 0 having matched
+    # zero lines in edge cases like an empty/unexpected line_no).
+    local first_line
+    first_line="$(head -1 "$content_file")"
+    grep -q -F "$first_line" "$file"
 }
 
 # mgr_commit_and_verify: given a LOCAL edited copy of ossec.conf and a
@@ -150,7 +171,40 @@ mgr_commit_and_verify() {
         return 1
     fi
 
+    # Best-effort, opt-in, and deliberately NOT rollback-triggering: daemon
+    # status can look healthy while the API itself is misbehaving (or vice
+    # versa, an admin-set wrong password here shouldn't undo a good config
+    # change). See mgr_api_health_check for what "opt-in" means.
+    if ! mgr_api_health_check; then
+        echo "WARNING: manager daemons report healthy, but the Wazuh API did not authenticate (WAZUH_API_USER/WAZUH_API_PASSWORD). Dashboard login may still fail — check the API service and credentials." >&2
+    fi
+
     return 0
+}
+
+# mgr_api_health_check: deeper-than-daemon-status check via the Wazuh
+# REST API itself — a successful login proves the API is not just "the
+# process exists" but actually authenticating, which is what the
+# Dashboard needs. Opt-in via WAZUH_API_USER/WAZUH_API_PASSWORD, since the
+# API may be disabled, on a non-default port, or using credentials we have
+# no business guessing. Verified against Wazuh's documented endpoint:
+# POST https://<host>:<port>/security/user/authenticate (default port
+# 55000, HTTP Basic auth, JWT returned as plain text with ?raw=true).
+WAZUH_API_PROTOCOL="${WAZUH_API_PROTOCOL:-https}"
+WAZUH_API_HOST="${WAZUH_API_HOST:-localhost}"
+WAZUH_API_PORT="${WAZUH_API_PORT:-55000}"
+
+mgr_api_health_check() {
+    # Not configured -> not applicable, not a failure. Return success so
+    # callers that only warn-on-failure don't nag when nobody opted in.
+    [ -n "${WAZUH_API_USER:-}" ] && [ -n "${WAZUH_API_PASSWORD:-}" ] || return 0
+    command -v curl >/dev/null 2>&1 || return 0
+
+    local token
+    token="$(curl -sk --max-time 10 -u "${WAZUH_API_USER}:${WAZUH_API_PASSWORD}" \
+        -X POST "${WAZUH_API_PROTOCOL}://${WAZUH_API_HOST}:${WAZUH_API_PORT}/security/user/authenticate?raw=true" \
+        2>>"${LOG_FILE:-/dev/null}")"
+    [ -n "$token" ] && [ "${#token}" -gt 20 ]
 }
 
 mgr_group_exists() {
@@ -288,7 +342,42 @@ mgr_sync_company_integrations() {
         mgr_insert_before_tag "$local_conf" "$block" "</ossec_config>" || return 1
     fi
 
-    mgr_commit_and_verify "$local_conf" "$backup"
+    if ! mgr_commit_and_verify "$local_conf" "$backup"; then
+        return 1
+    fi
+
+    # Verification, not assumption: mgr_commit_and_verify only proves the
+    # manager restarted healthy with SOME config — it doesn't prove this
+    # company's blocks are the ones that ended up live. Re-pull the config
+    # post-restart and confirm the markers we intended to add are actually
+    # present in the live file, not just in our own local copy of it.
+    local live_conf verify_ok=true
+    live_conf="$(mgr_local_conf_copy)" || { echo "WARNING: could not re-fetch live config to verify — restart succeeded but content unverified." >&2; return 0; }
+    if [ -n "$slack" ]; then
+        grep -q -F "$slack_marker" "$live_conf" || { echo "VERIFY FAILED: Slack block for '$slug' not found in live config after restart." >&2; verify_ok=false; }
+    fi
+    if [ -n "$tgbot" ] && [ -n "$tgchat" ]; then
+        grep -q -F "$telegram_marker" "$live_conf" || { echo "VERIFY FAILED: Telegram block for '$slug' not found in live config after restart." >&2; verify_ok=false; }
+    fi
+    rm -f "$live_conf"
+    $verify_ok
+}
+
+# mgr_list_marker_slugs: every distinct slug that currently has a
+# soc-manager-managed slack and/or telegram block live on the manager,
+# regardless of whether that slug still corresponds to a company in the
+# database. This is the read side of drift detection — a company deleted
+# via an interrupted/partially-failed run, or added under a slug that no
+# longer matches any current DB row, shows up here so a caller (integration.sh
+# prune) can reconcile reality against companies.db instead of only ever
+# looking at one company's markers at a time.
+mgr_list_marker_slugs() {
+    local live_conf
+    live_conf="$(mgr_local_conf_copy)" || return 1
+    grep -o -E '<!-- soc-manager:integration:(slack|telegram):[A-Za-z0-9._-]+ -->' "$live_conf" \
+        | sed -E 's/.*:(slack|telegram):([A-Za-z0-9._-]+) -->/\2/' \
+        | sort -u
+    rm -f "$live_conf"
 }
 
 mgr_remove_company_integrations() {
@@ -301,8 +390,24 @@ mgr_remove_company_integrations() {
     local_conf="$(mgr_local_conf_copy)" || return 1
     trap 'rm -f "$local_conf"' RETURN
 
-    mgr_remove_block "$local_conf" "$(_slack_marker "$slug")" || return 1
-    mgr_remove_block "$local_conf" "$(_telegram_marker "$slug")" || return 1
+    local slack_marker telegram_marker
+    slack_marker="$(_slack_marker "$slug")"
+    telegram_marker="$(_telegram_marker "$slug")"
 
-    mgr_commit_and_verify "$local_conf" "$backup"
+    mgr_remove_block "$local_conf" "$slack_marker" || return 1
+    mgr_remove_block "$local_conf" "$telegram_marker" || return 1
+
+    if ! mgr_commit_and_verify "$local_conf" "$backup"; then
+        return 1
+    fi
+
+    # Same verification principle as mgr_sync_company_integrations: confirm
+    # the blocks are actually gone from the live config, not just that the
+    # restart succeeded with whatever we pushed.
+    local live_conf verify_ok=true
+    live_conf="$(mgr_local_conf_copy)" || { echo "WARNING: could not re-fetch live config to verify removal." >&2; return 0; }
+    grep -q -F "$slack_marker" "$live_conf" && { echo "VERIFY FAILED: Slack block for '$slug' still present after removal." >&2; verify_ok=false; }
+    grep -q -F "$telegram_marker" "$live_conf" && { echo "VERIFY FAILED: Telegram block for '$slug' still present after removal." >&2; verify_ok=false; }
+    rm -f "$live_conf"
+    $verify_ok
 }

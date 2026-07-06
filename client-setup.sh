@@ -18,9 +18,15 @@ set -Eeuo pipefail
 
 # ---- Fill these in before running (company-manager.sh prints a
 #      ready-to-paste version of this header when you add a company) ----
-WAZUH_MANAGER_IP="${WAZUH_MANAGER_IP:-CHANGE_ME}"
-GROUP="${GROUP:-CHANGE_ME}"
-MANAGER_PUB_KEY="${MANAGER_PUB_KEY:-CHANGE_ME}"
+WAZUH_MANAGER_IP="${WAZUH_MANAGER_IP:-20.40.61.57}"
+GROUP="${GROUP:-default}"
+# The name this agent will register under on the manager. Left unset, Wazuh
+# falls back to the machine's own hostname, which has nothing to do with the
+# "Server label" recorded in companies.db — verify.sh would then be guessing
+# identity by company name or IP instead of checking something deterministic.
+# Set this (company-manager.sh's deploy.sh does, from the server_name field).
+AGENT_NAME="${AGENT_NAME:-}"
+MANAGER_PUB_KEY="${MANAGER_PUB_KEY:-ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJZaVraZkFwy+GBxjszQP4wAlIBZmwd/RHvtlIRX3Nka soc-manager}"
 SSH_USER="${SSH_USER:-root}"
 # --------------------------------------------------------------------
 
@@ -41,6 +47,13 @@ for var_name in WAZUH_MANAGER_IP GROUP MANAGER_PUB_KEY; do
         exit 1
     fi
 done
+
+if [ -z "$AGENT_NAME" ]; then
+    log "WARNING: AGENT_NAME not set — this agent will enroll under its own hostname instead of the"
+    log "  server label recorded in companies.db, which means verify.sh and the manager's agent list"
+    log "  won't have a deterministic way to match this box to its company record. Strongly recommend"
+    log "  re-running with AGENT_NAME=<server_label> (deploy.sh prints this automatically)."
+fi
 
 OSSEC_CONF="/var/ossec/etc/ossec.conf"
 
@@ -102,11 +115,11 @@ log "Backed up ossec.conf to $BACKUP"
 # Replace the manager address within <client><server><address>...</address>
 # rather than a blind global sed, so we don't touch an unrelated <address>
 # tag if one ever exists elsewhere in the file.
-python3 - "$OSSEC_CONF" "$WAZUH_MANAGER_IP" "$GROUP" <<'PYEOF'
+python3 - "$OSSEC_CONF" "$WAZUH_MANAGER_IP" "$GROUP" "$AGENT_NAME" <<'PYEOF'
 import re
 import sys
 
-conf_path, manager_ip, group = sys.argv[1], sys.argv[2], sys.argv[3]
+conf_path, manager_ip, group, agent_name = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
 with open(conf_path) as f:
     content = f.read()
 
@@ -121,21 +134,26 @@ if n == 0:
     sys.exit(1)
 content = new_content
 
-# Add/replace a <groups> entry inside <enrollment>, preserving any other
-# settings already there (e.g. a non-default <port> or <agent_name>).
+# Add/replace <groups> (and <agent_name>, if given) inside <enrollment>,
+# preserving any other settings already there (e.g. a non-default <port>).
 # Only create a whole new <enrollment> block if none exists.
+def upsert_tag(block, tag, value):
+    if f"<{tag}>" in block:
+        return re.sub(rf"<{tag}>.*?</{tag}>", f"<{tag}>{value}</{tag}>", block, count=1, flags=re.S)
+    return block.replace("</enrollment>", f"  <{tag}>{value}</{tag}>\n  </enrollment>")
+
 enrollment_match = re.search(r"<enrollment>.*?</enrollment>", content, flags=re.S)
 if enrollment_match:
     block = enrollment_match.group(0)
-    if "<groups>" in block:
-        new_block = re.sub(r"<groups>.*?</groups>", f"<groups>{group}</groups>", block, count=1, flags=re.S)
-    else:
-        new_block = block.replace("</enrollment>", f"  <groups>{group}</groups>\n  </enrollment>")
-    content = content[:enrollment_match.start()] + new_block + content[enrollment_match.end():]
+    block = upsert_tag(block, "groups", group)
+    if agent_name:
+        block = upsert_tag(block, "agent_name", agent_name)
+    content = content[:enrollment_match.start()] + block + content[enrollment_match.end():]
 else:
+    agent_name_line = f"\n    <agent_name>{agent_name}</agent_name>" if agent_name else ""
     content = re.sub(
         r"(<client>.*?)(</client>)",
-        rf"\1  <enrollment>\n    <groups>{group}</groups>\n  </enrollment>\n\2",
+        rf"\1  <enrollment>\n    <groups>{group}</groups>{agent_name_line}\n  </enrollment>\n\2",
         content, count=1, flags=re.S,
     )
 
@@ -187,7 +205,11 @@ if $ALREADY_ENROLLED; then
     echo " This agent had already enrolled before — group assignment may"
     echo " need to be applied manually on the manager (see log above)."
 else
-    echo " Agent will enroll into group '$GROUP' on first connection."
+    if [ -n "$AGENT_NAME" ]; then
+        echo " Agent will enroll as '$AGENT_NAME' into group '$GROUP' on first connection."
+    else
+        echo " Agent will enroll under its own hostname (AGENT_NAME not set) into group '$GROUP'."
+    fi
 fi
 echo " Verify from the manager with: ./verify.sh <company_name>"
 echo "============================================="

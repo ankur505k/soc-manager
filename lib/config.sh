@@ -6,6 +6,16 @@ validate_company_name() {
     [[ "$1" =~ ^[A-Za-z0-9_-]{2,40}$ ]]
 }
 
+# validate_server_name: this value becomes the Wazuh <enrollment><agent_name>
+# — Wazuh itself only allows alphanumerics, '-', '_', '.', min length 2 (see
+# https://documentation.wazuh.com/current/user-manual/reference/ossec-conf/client.html).
+# Rejecting anything else here, at input time, is what stops the "operator
+# typed a free-text label with spaces, enrollment silently falls back to the
+# hostname instead" failure mode.
+validate_server_name() {
+    [[ "$1" =~ ^[A-Za-z0-9_.-]{2,128}$ ]]
+}
+
 validate_host() {
     local h="$1"
     # IPv4

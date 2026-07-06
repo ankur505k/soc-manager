@@ -75,6 +75,7 @@ echo "chmod +x client-setup.sh"
 cat <<EOF
 WAZUH_MANAGER_IP="$(hostname -I 2>/dev/null | awk '{print $1}')" \\
 GROUP="$SLUG" \\
+AGENT_NAME="$server_name" \\
 MANAGER_PUB_KEY="${PUBKEY:-<contents of $SSH_KEY.pub>}" \\
 SSH_USER="root" \\
   ./client-setup.sh

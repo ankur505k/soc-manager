@@ -72,12 +72,33 @@ if wazuh_ready 2>/dev/null; then
     # loose substring/OR grep — a plain `grep "$name\|$host"` would also
     # match e.g. company "Ac" against agent "Acme-01", or one octet of an
     # IP appearing inside a different agent's name/ID.
-    agent_list="$(wazuh_exec /var/ossec/bin/agent_control -lc 2>/dev/null || true)"
-    if printf '%s\n' "$agent_list" | grep -qF "Name: ${name}," || \
-       printf '%s\n' "$agent_list" | grep -qF "IP: ${host},"; then
-        pass "Manager sees an agent matching '$name'/'$host' in agent_control -lc"
+    #
+    # Match on server_name FIRST, not the company display name: the agent
+    # actually registers under whatever client-setup.sh set as
+    # <enrollment><agent_name> (deploy.sh passes it as server_name) — that's
+    # the deterministic identity, not the free-text company name, which can
+    # differ arbitrarily from what the box enrolled as. Fall back to company
+    # name / host IP for agents enrolled before this field was wired up.
+    #
+    # Retried rather than checked once: a freshly-enrolled agent can take
+    # a few seconds to show up in agent_control -lc, and a single
+    # immediate check right after client-setup.sh would false-negative on
+    # a perfectly fine deploy.
+    found=false
+    for attempt in 1 2 3 4 5; do
+        agent_list="$(wazuh_exec /var/ossec/bin/agent_control -lc 2>/dev/null || true)"
+        if { [ -n "$server_name" ] && printf '%s\n' "$agent_list" | grep -qF "Name: ${server_name},"; } || \
+           printf '%s\n' "$agent_list" | grep -qF "Name: ${name}," || \
+           printf '%s\n' "$agent_list" | grep -qF "IP: ${host},"; then
+            found=true
+            break
+        fi
+        [ "$attempt" -lt 5 ] && sleep 3
+    done
+    if $found; then
+        pass "Manager sees an agent matching '${server_name:-$name}'/'$host' in agent_control -lc"
     else
-        warn "Manager's agent_control -lc doesn't show '$name'/'$host' yet (may still be pending first connection)"
+        warn "Manager's agent_control -lc doesn't show '${server_name:-$name}'/'$host' after 5 attempts (~15s) — may still be pending first connection"
     fi
 else
     warn "Could not check manager-side agent list (no Wazuh manager detected here)"

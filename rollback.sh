@@ -16,6 +16,8 @@ source "$MANAGER_HOME/lib/wazuh_integration.sh"
 LOG_FILE="$MANAGER_HOME/logs/soc-manager.log"
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S') [rollback] $1" >> "$LOG_FILE"; }
 
+trap 'echo; echo "Interrupted." >&2; exit 130' INT TERM
+
 preflight_check || exit 1
 soc_acquire_lock || exit 1
 

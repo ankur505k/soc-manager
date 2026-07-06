@@ -93,10 +93,16 @@ wazuh_ready() {
 
 wazuh_manager_summary() {
     if wazuh_detect_mode; then
+        local base
         if [ "$MANAGER_MODE" = "docker" ]; then
-            echo "Manager mode: Docker (container: $WAZUH_CONTAINER)"
+            base="Manager mode: Docker (container: $WAZUH_CONTAINER)"
         else
-            echo "Manager mode: native (systemd)"
+            base="Manager mode: native (systemd)"
+        fi
+        if wazuh_api_daemon_running; then
+            echo "$base | API: up"
+        else
+            echo "$base | API: down or disabled"
         fi
     else
         echo "Manager mode: NOT DETECTED (no matching container, no native /var/ossec)"
@@ -170,10 +176,28 @@ wazuh_is_active() {
     local status
     status="$(wazuh_exec /var/ossec/bin/wazuh-control status 2>/dev/null)" || return 1
     local d
-    for d in wazuh-analysisd wazuh-remoted wazuh-db; do
+    # wazuh-modulesd added alongside the original three: it drives
+    # syscollector/vulnerability-detector/etc, and its absence is a real
+    # "manager isn't fully up" signal, not a cosmetic one.
+    # wazuh-apid (the REST API, which the Dashboard needs to log in) is
+    # deliberately NOT in this hard-required list — some admins disable
+    # the API intentionally, and that's a valid config, not a broken
+    # manager. See wazuh_api_daemon_running() below for visibility into it
+    # without making it a rollback trigger.
+    for d in wazuh-analysisd wazuh-remoted wazuh-db wazuh-modulesd; do
         echo "$status" | grep -q "${d} is running" || return 1
     done
     return 0
+}
+
+# wazuh_api_daemon_running: best-effort visibility into whether the REST
+# API process itself is up, per `wazuh-control status`. Informational only
+# (see the comment in wazuh_is_active for why it isn't a hard requirement).
+wazuh_api_daemon_running() {
+    wazuh_detect_mode || return 1
+    local status
+    status="$(wazuh_exec /var/ossec/bin/wazuh-control status 2>/dev/null)" || return 1
+    echo "$status" | grep -q "wazuh-apid is running"
 }
 
 # wazuh_wait_active <timeout_seconds> [poll_interval_seconds]

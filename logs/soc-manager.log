@@ -1,0 +1,24 @@
+2026-07-04 09:41:10 [deploy] PENDING default needs client-setup.sh run manually on 20.40.61.57
+2026-07-04 09:41:40 [deploy] PENDING default needs client-setup.sh run manually on 20.40.61.57
+2026-07-04 10:14:55 [deploy] PENDING default needs client-setup.sh run manually on 20.40.61.57
+2026-07-04 10:15:56 [deploy] PENDING default needs client-setup.sh run manually on 20.40.61.57
+2026-07-04 10:37:05 [deploy] PENDING default needs client-setup.sh run manually on 20.40.61.57
+Do you want to create the group 'test1'? [y/N]: Group 'test1' created.
+2026-07-04 11:24:16 [menu] DELETE company=TEST1 slug=test1
+Do you want to create the group 'test'? [y/N]: Group 'test' created.
+2026-07-04 11:36:51 [menu] ADD company=TEST slug=test host=187.127.185.138
+2026-07-04 11:38:37 [deploy] OK test already enrolled
+2026-07-04 11:38:48 [deploy] OK test already enrolled
+2026-07-06 04:28:05 [deploy] OK TEST already enrolled
+Do you want to remove the 'test' group? [y/N]: Some Wazuh daemons are not ready yet in node "node01" (wazuh-modulesd->failed, wazuh-analysisd->stopped, wazuh-execd->stopped, wazuh-db->stopped, wazuh-remoted->stopped)
+Internal error: Error 1017 - Some Wazuh daemons are not ready yet in node "node01" (wazuh-modulesd->failed, wazuh-analysisd->stopped, wazuh-execd->stopped, wazuh-db->stopped, wazuh-remoted->stopped)
+2026-07-06 05:14:46 [menu] DELETE company=TEST slug=test
+Do you want to create the group 'alma-server'? [y/N]: Group 'alma-server' created.
+2026-07-06 05:20:35 [menu] ADD company=ALMA-SERVER slug=alma-server host=187.127.185.138
+2026-07-06 05:24:32 [deploy] OK ALMA-SERVER already enrolled
+2026-07-06 05:27:16 [deploy] OK ALMA-SERVER already enrolled
+Do you want to remove the 'default' group? [y/N]: Some Wazuh daemons are not ready yet in node "node01" (wazuh-modulesd->failed, wazuh-analysisd->stopped, wazuh-execd->stopped, wazuh-db->stopped, wazuh-remoted->stopped)
+Internal error: Error 1017 - Some Wazuh daemons are not ready yet in node "node01" (wazuh-modulesd->failed, wazuh-analysisd->stopped, wazuh-execd->stopped, wazuh-db->stopped, wazuh-remoted->stopped)
+2026-07-06 05:37:04 [menu] DELETE company=default slug=default
+2026-07-06 05:39:20 [deploy] OK ALMA-SERVER already enrolled
+2026-07-06 05:39:38 [deploy] OK ALMA-SERVER already enrolled

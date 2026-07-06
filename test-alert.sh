@@ -14,6 +14,9 @@ set -Eeuo pipefail
 
 MANAGER_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$MANAGER_HOME/lib/database.sh"
+source "$MANAGER_HOME/lib/config.sh"
+source "$MANAGER_HOME/lib/docker.sh"
+source "$MANAGER_HOME/lib/wazuh_integration.sh"
 
 usage() { echo "Usage: $0 <company_name>" >&2; exit 1; }
 [ $# -eq 1 ] || usage
@@ -28,6 +31,7 @@ if ! db_company_exists "$COMPANY"; then
 fi
 
 IFS='|' read -r id name server_name host user port slack tgbot tgchat status last_updated <<< "$(db_get_company "$COMPANY")"
+SLUG="$(company_slug "$COMPANY")"
 
 any=false
 
@@ -60,4 +64,34 @@ fi
 if ! $any; then
     echo "No Slack webhook or Telegram bot/chat configured for $COMPANY — nothing to test." >&2
     exit 1
+fi
+
+# The checks above only prove the CREDENTIALS work by calling Slack/Telegram
+# directly — they never touch Wazuh at all, so a pass here is consistent
+# with real alerts never arriving if the <integration> block was never
+# written (or was removed) from the manager's live ossec.conf. Check that
+# too, so a passing test-alert run can't be mistaken for proof the pipeline
+# is wired up.
+if wazuh_ready 2>/dev/null; then
+    echo "-- Checking the pipeline itself (is the block actually live on the manager?) --"
+    if [ -n "$slack" ]; then
+        if mgr_integration_block_present "$(printf '<!-- soc-manager:integration:slack:%s -->' "$SLUG")"; then
+            echo "OK: Slack <integration> block is present in the manager's live ossec.conf."
+        else
+            echo "FAIL: no Slack <integration> block found in the manager's live ossec.conf for group '$SLUG'." >&2
+            echo "      Slack itself works (see above), but Wazuh will never call it. Run:" >&2
+            echo "        ./integration.sh sync \"$COMPANY\"" >&2
+        fi
+    fi
+    if [ -n "$tgbot" ] && [ -n "$tgchat" ]; then
+        if mgr_integration_block_present "$(printf '<!-- soc-manager:integration:telegram:%s -->' "$SLUG")"; then
+            echo "OK: Telegram <integration> block is present in the manager's live ossec.conf."
+        else
+            echo "FAIL: no Telegram <integration> block found in the manager's live ossec.conf for group '$SLUG'." >&2
+            echo "      Telegram itself works (see above), but Wazuh will never call it. Run:" >&2
+            echo "        ./integration.sh sync \"$COMPANY\"" >&2
+        fi
+    fi
+else
+    echo "(Could not check the manager's live ossec.conf from here — no Wazuh manager detected. Run this from the manager host for the full check.)"
 fi

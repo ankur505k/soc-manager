@@ -11,6 +11,7 @@ source "$MANAGER_HOME/lib/ssh.sh"
 source "$MANAGER_HOME/lib/config.sh"
 source "$MANAGER_HOME/lib/docker.sh"
 source "$MANAGER_HOME/lib/wazuh_integration.sh"
+source "$MANAGER_HOME/lib/fim.sh"
 source "$MANAGER_HOME/lib/preflight.sh"
 
 GREEN="\033[0;32m"; RED="\033[0;31m"; YELLOW="\033[1;33m"; BLUE="\033[0;34m"; NC="\033[0m"
@@ -66,6 +67,10 @@ add_company() {
 
     local server_name host user port
     read -r -p "Server label (e.g. Delhi01): " server_name
+    if ! validate_server_name "$server_name"; then
+        fail "Invalid server label — this becomes the agent's enrollment name on the manager, so it must match Wazuh's own rules: letters, numbers, '.', '_', '-' only, 2-128 chars (no spaces)."
+        pause; return
+    fi
     read -r -p "Server IP or hostname: " host
     if ! validate_host "$host"; then fail "Invalid host."; pause; return; fi
     read -r -p "SSH user [root]: " user; user="${user:-root}"
@@ -107,6 +112,21 @@ add_company() {
         fi
     fi
 
+    info "Pushing FIM (VICIdial + AlmaLinux paths) config for group '$slug'..."
+    if mgr_sync_company_fim "$slug"; then
+        ok "FIM config staged on the manager for '$name'."
+        # The client almost certainly hasn't run client-setup.sh yet at this
+        # point, so this SSH attempt will usually just fail quietly — that's
+        # fine, client-setup.sh's own agent restart (step 4) picks up this
+        # group config automatically once it runs.
+        if fim_restart_agent "$host" "$user" "$port"; then
+            ok "Agent on $host already reachable — restarted, FIM active now."
+        fi
+    else
+        fail "Failed to push FIM config for '$slug'. See $LOG_FILE."
+        warn "Fix the issue and re-run: ./fim.sh push \"$name\""
+    fi
+
     log "ADD company=$name slug=$slug host=$host"
     echo
     echo "Next step: run client-setup.sh on $host. See:"
@@ -132,6 +152,7 @@ update_company() {
     echo "4) Slack webhook          [current: $(mask "$slack")]"
     echo "5) Telegram bot token     [current: $(mask "$tgbot")]"
     echo "6) Telegram chat ID       [current: ${tgchat:-none}]"
+    echo "7) Re-push FIM (VICIdial + AlmaLinux) config now"
     echo "0) Back"
     read -r -p "Field to update: " f
 
@@ -164,6 +185,18 @@ update_company() {
                 sync_after_change "$name" "$slug"
             else
                 fail "Invalid chat ID."
+            fi
+            ;;
+        7)
+            if mgr_sync_company_fim "$slug"; then
+                ok "FIM config re-pushed on the manager for '$name'."
+                if fim_restart_agent "$host" "$user" "$port"; then
+                    ok "Agent on $host restarted — FIM active now."
+                else
+                    warn "Could not reach $host over SSH — it will pick up FIM on its next scheduled config sync."
+                fi
+            else
+                fail "Failed to push FIM config. See $LOG_FILE."
             fi
             ;;
         0) return ;;
@@ -210,11 +243,18 @@ delete_company() {
         pause; return
     fi
 
-    mgr_remove_company_integrations "$slug" || warn "Could not cleanly remove integration blocks — check $LOG_FILE."
-    mgr_delete_group "$slug" || warn "Could not remove agent group '$slug'."
+    local integrations_ok=true group_ok=true db_ok=true
+    mgr_remove_company_integrations "$slug" || { warn "Could not cleanly remove integration blocks — check $LOG_FILE."; integrations_ok=false; }
+    mgr_delete_group "$slug" || { warn "Could not remove agent group '$slug'."; group_ok=false; }
     db_delete_company "$name"
-    ok "Deleted '$name'."
-    log "DELETE company=$name slug=$slug"
+    db_company_exists "$name" && { warn "Database entry for '$name' still present after delete."; db_ok=false; }
+
+    if $integrations_ok && $group_ok && $db_ok; then
+        ok "Deleted '$name' — integrations removed, group removed, database entry removed. No leftovers found."
+    else
+        warn "'$name' was deleted, but with the issue(s) above — see $LOG_FILE and clean up manually if needed."
+    fi
+    log "DELETE company=$name slug=$slug integrations_ok=$integrations_ok group_ok=$group_ok db_ok=$db_ok"
     pause
 }
 
@@ -244,6 +284,7 @@ menu() {
         echo "6  Check / Complete Enrollment"
         echo "7  Test Alert (Slack/Telegram credentials)"
         echo "8  Rollback Manager Config"
+        echo "9  Repair Integrations (resync all + prune orphaned blocks)"
         echo "0  Exit"
         echo "===================================="
         read -r -p "Select: " op
@@ -257,6 +298,14 @@ menu() {
             6) read -r -p "Company name: " n; "$MANAGER_HOME/deploy.sh" "$n"; pause ;;
             7) read -r -p "Company name: " n; "$MANAGER_HOME/test-alert.sh" "$n"; pause ;;
             8) "$MANAGER_HOME/rollback.sh"; pause ;;
+            9)
+                echo "-- Resyncing every company's integration blocks from the database --"
+                "$MANAGER_HOME/integration.sh" resync-all
+                echo
+                echo "-- Checking for orphaned blocks with no matching company --"
+                "$MANAGER_HOME/integration.sh" prune
+                pause
+                ;;
             0) echo "Goodbye."; exit 0 ;;
             *) warn "Invalid option."; sleep 1 ;;
         esac
@@ -271,6 +320,7 @@ main() {
     mkdir -p "$MANAGER_HOME/logs" "$MANAGER_HOME/backup"
     touch "$LOG_FILE"; chmod 600 "$LOG_FILE"
     soc_acquire_lock || exit 1
+    export SOC_MANAGER_LOCK_HELD=1
     db_init || exit 1
     menu
 }
